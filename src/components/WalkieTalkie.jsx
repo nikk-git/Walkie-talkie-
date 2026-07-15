@@ -6,19 +6,17 @@ import { useRouter } from 'next/navigation';
 
 export default function WalkieTalkie({ roomId, username }) {
   const router = useRouter();
-  const { peers, talkingUsers, isMuted, toggleMute, myId, connectionStatus } = useWebRTC(roomId, username);
-
-  // Resume any blocked audio on user interaction (mobile autoplay policy)
-  const handleInteraction = useCallback(() => {
-    document.querySelectorAll('audio').forEach(el => {
-      if (el.paused && el.srcObject) el.play().catch(() => {});
-    });
-  }, []);
+  const { peers, talkingUsers, isMuted, toggleMute, myId, connectionStatus, unlockAudio } = useWebRTC(roomId, username);
 
   const handleLeave = () => {
     sessionStorage.removeItem('wt_username');
     router.push('/');
   };
+
+  // Unlock audio on any touch/click (critical for mobile)
+  const handleInteraction = useCallback(() => {
+    unlockAudio();
+  }, [unlockAudio]);
 
   const isConnected = connectionStatus === 'SUBSCRIBED';
   const peerList = Object.entries(peers);
@@ -34,19 +32,14 @@ export default function WalkieTalkie({ roomId, username }) {
         <h2 style={{ marginBottom: '0.5rem' }}>Room {roomId}</h2>
         <p style={{ color: 'var(--text-muted)' }}>Connected as: {username}</p>
         <p style={{
-          fontSize: '0.75rem',
-          marginTop: '0.5rem',
+          fontSize: '0.75rem', marginTop: '0.5rem',
           color: isConnected ? '#4ade80' : '#f87171',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          gap: '0.4rem'
+          display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.4rem'
         }}>
           <span style={{
             width: 8, height: 8, borderRadius: '50%',
             backgroundColor: isConnected ? '#4ade80' : '#f87171',
-            display: 'inline-block',
-            animation: isConnected ? 'none' : 'pulse 1.5s infinite'
+            display: 'inline-block'
           }} />
           {connectionStatus} &bull; {myId?.slice(0, 8)}
         </p>
