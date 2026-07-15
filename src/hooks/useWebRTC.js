@@ -126,7 +126,7 @@ export function useWebRTC(roomId, username) {
     pc.ontrack = (event) => {
       console.log(`[WebRTC] Track from ${targetId.slice(0, 8)}`);
       const rs = event.streams[0];
-      setPeers(prev => ({ ...prev, [targetId]: { ...prev[targetId], stream: rs } }));
+      // Do not store the stream in React state to avoid Next.js HMR payload crashes
       playRemoteStream(targetId, rs);
     };
 
@@ -188,7 +188,6 @@ export function useWebRTC(roomId, username) {
         const merged = {};
         Object.keys(activePeers).forEach(id => {
           merged[id] = { ...activePeers[id] };
-          if (prev[id]?.stream) merged[id].stream = prev[id].stream;
         });
         return merged;
       });
