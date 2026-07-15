@@ -12,13 +12,18 @@ const configuration = {
 export function useWebRTC(roomId, username) {
   const [peers, setPeers] = useState({});
   const [talkingUsers, setTalkingUsers] = useState(new Set());
-  const [myId] = useState(() => uuidv4());
+  const [myId, setMyId] = useState('');
   const [stream, setStream] = useState(null);
   const [isMuted, setIsMuted] = useState(true);
   
   const connections = useRef({});
   const channelRef = useRef(null);
   const streamRef = useRef(null);
+
+  // Initialize unique client ID
+  useEffect(() => {
+    setMyId(uuidv4());
+  }, []);
 
   // Initialize media safely
   useEffect(() => {
@@ -101,7 +106,7 @@ export function useWebRTC(roomId, username) {
   }, [myId]);
 
   useEffect(() => {
-    if (!roomId || !stream) return;
+    if (!roomId || !stream || !myId) return;
 
     const channel = supabase.channel(`room:${roomId}`, {
       config: { presence: { key: myId }, broadcast: { self: false } }
