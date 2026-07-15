@@ -14,6 +14,7 @@ export function useWebRTC(roomId, username) {
   const [talkingUsers, setTalkingUsers] = useState(new Set());
   const [isMuted, setIsMuted] = useState(true);
   const [connectionStatus, setConnectionStatus] = useState('Initializing...');
+  const [micReady, setMicReady] = useState(false);
 
   // Use a ref for myId so it's stable across renders and never stale in callbacks
   const myIdRef = useRef(uuidv4());
@@ -34,8 +35,8 @@ export function useWebRTC(roomId, username) {
         // Start muted (PTT)
         s.getAudioTracks().forEach(t => (t.enabled = false));
         streamRef.current = s;
-        // Force a re-render so the channel effect can fire
         setConnectionStatus('Mic ready');
+        setMicReady(true);
       })
       .catch(err => {
         console.error('Mic error:', err);
@@ -123,7 +124,7 @@ export function useWebRTC(roomId, username) {
   // ─── 3. Join Supabase Realtime channel ───────────────────────────────
   useEffect(() => {
     // Wait until mic is ready
-    if (!roomId || !streamRef.current || !myId) return;
+    if (!roomId || !micReady || !myId) return;
 
     // Prevent Strict Mode double-mount from creating duplicate channels
     if (mountedRef.current) return;
@@ -238,7 +239,7 @@ export function useWebRTC(roomId, username) {
       });
       connectionsRef.current = {};
     };
-  }, [roomId, connectionStatus, myId, username, createPeerConnection]);
+  }, [roomId, micReady, myId, username, createPeerConnection]);
 
   // ─── 4. Push-to-Talk toggle ──────────────────────────────────────────
   const toggleMute = useCallback(async (muted) => {
