@@ -6,6 +6,8 @@ const ICE_SERVERS = {
   iceServers: [
     { urls: 'stun:stun.l.google.com:19302' },
     { urls: 'stun:stun1.l.google.com:19302' },
+    { urls: 'stun:stun2.l.google.com:19302' },
+    { urls: 'stun:stun3.l.google.com:19302' },
   ]
 };
 
@@ -16,34 +18,30 @@ export function useWebRTC(roomId, username) {
   const [connectionStatus, setConnectionStatus] = useState('Initializing...');
   const [micReady, setMicReady] = useState(false);
 
-  // Use a ref for myId so it's stable across renders and never stale in callbacks
+  // Stable ID via ref — never changes, never stale
   const myIdRef = useRef(uuidv4());
-  const connectionsRef = useRef({});
+  const pcRef = useRef({});       // peerId -> RTCPeerConnection
   const channelRef = useRef(null);
   const streamRef = useRef(null);
-  const mountedRef = useRef(false);
+  const audioElsRef = useRef({}); // peerId -> Audio element for playback
 
   const myId = myIdRef.current;
 
-  // ─── 1. Acquire microphone ───────────────────────────────────────────
+  // ─── 1. Acquire microphone (runs once) ────────────────────────────────
   useEffect(() => {
     let cancelled = false;
-
     navigator.mediaDevices.getUserMedia({ audio: true, video: false })
       .then(s => {
         if (cancelled) { s.getTracks().forEach(t => t.stop()); return; }
-        // Start muted (PTT)
-        s.getAudioTracks().forEach(t => (t.enabled = false));
+        s.getAudioTracks().forEach(t => (t.enabled = false)); // PTT = start muted
         streamRef.current = s;
-        setConnectionStatus('Mic ready');
         setMicReady(true);
+        setConnectionStatus('Mic ready');
       })
       .catch(err => {
-        console.error('Mic error:', err);
+        console.error('[Mic] Error:', err);
         setConnectionStatus('Mic blocked');
-        alert('Microphone access is required. Please allow it in browser settings. On mobile, HTTPS is required.');
       });
-
     return () => {
       cancelled = true;
       streamRef.current?.getTracks().forEach(t => t.stop());
@@ -51,114 +49,129 @@ export function useWebRTC(roomId, username) {
     };
   }, []);
 
-  // ─── 2. Create a peer connection ─────────────────────────────────────
-  const createPeerConnection = useCallback((targetId, initiator) => {
-    // Close any existing stale connection
-    if (connectionsRef.current[targetId]) {
-      try { connectionsRef.current[targetId].close(); } catch (_) {}
-      delete connectionsRef.current[targetId];
+  // ─── Helper: play remote audio for a peer ─────────────────────────────
+  const playRemoteAudio = useCallback((peerId, remoteStream) => {
+    // Reuse or create a persistent Audio element per peer
+    if (!audioElsRef.current[peerId]) {
+      audioElsRef.current[peerId] = new Audio();
+      audioElsRef.current[peerId].autoplay = true;
+    }
+    const el = audioElsRef.current[peerId];
+    if (el.srcObject !== remoteStream) {
+      el.srcObject = remoteStream;
+      el.play().catch(() => console.log('[Audio] Autoplay blocked for', peerId));
+    }
+  }, []);
+
+  // ─── 2. Create peer connection ────────────────────────────────────────
+  const makePeerConnection = useCallback((targetId, initiator) => {
+    // If there's already a healthy connection, don't recreate
+    const existing = pcRef.current[targetId];
+    if (existing) {
+      const state = existing.iceConnectionState;
+      if (state === 'connected' || state === 'completed' || state === 'checking' || state === 'new') {
+        console.log(`[WebRTC] Reusing existing PC for ${targetId} (state=${state})`);
+        return existing;
+      }
+      // Close stale connection
+      try { existing.close(); } catch (_) {}
+      delete pcRef.current[targetId];
     }
 
-    console.log(`[WebRTC] Creating PC for ${targetId}, initiator=${initiator}`);
+    console.log(`[WebRTC] New PC for ${targetId.slice(0,8)}, initiator=${initiator}`);
     const pc = new RTCPeerConnection(ICE_SERVERS);
-    connectionsRef.current[targetId] = pc;
+    pcRef.current[targetId] = pc;
 
-    // Add local audio track
+    // Add local tracks
     if (streamRef.current) {
-      streamRef.current.getTracks().forEach(track => {
-        pc.addTrack(track, streamRef.current);
-      });
+      streamRef.current.getTracks().forEach(track => pc.addTrack(track, streamRef.current));
     }
 
-    // Send ICE candidates via Supabase broadcast
+    // ICE candidates → broadcast
     pc.onicecandidate = (e) => {
       if (e.candidate && channelRef.current) {
         channelRef.current.send({
-          type: 'broadcast',
-          event: 'ice-candidate',
+          type: 'broadcast', event: 'ice-candidate',
           payload: { targetId, senderId: myId, candidate: e.candidate }
         });
       }
     };
 
-    // When we receive a remote track, store the stream
+    // Remote track received
     pc.ontrack = (event) => {
-      console.log(`[WebRTC] Got remote track from ${targetId}`);
-      const remoteStream = event.streams[0];
-      setPeers(prev => ({
-        ...prev,
-        [targetId]: { ...prev[targetId], stream: remoteStream }
-      }));
-
-      // Force-play audio immediately (handles autoplay policy)
-      try {
-        const audio = new Audio();
-        audio.srcObject = remoteStream;
-        audio.autoplay = true;
-        audio.play().catch(() => console.log('Autoplay blocked, will retry on interaction'));
-      } catch (_) {}
+      console.log(`[WebRTC] Remote track from ${targetId.slice(0,8)}`);
+      const rs = event.streams[0];
+      setPeers(prev => ({ ...prev, [targetId]: { ...prev[targetId], stream: rs } }));
+      playRemoteAudio(targetId, rs);
     };
 
     pc.oniceconnectionstatechange = () => {
-      console.log(`[WebRTC] ICE state ${targetId}: ${pc.iceConnectionState}`);
+      const st = pc.iceConnectionState;
+      console.log(`[WebRTC] ICE ${targetId.slice(0,8)}: ${st}`);
+      if (st === 'failed') {
+        // Attempt ICE restart
+        if (initiator && pc.signalingState !== 'closed') {
+          console.log(`[WebRTC] ICE restart for ${targetId.slice(0,8)}`);
+          pc.createOffer({ iceRestart: true })
+            .then(offer => pc.setLocalDescription(offer))
+            .then(() => {
+              channelRef.current?.send({
+                type: 'broadcast', event: 'offer',
+                payload: { targetId, senderId: myId, sdp: pc.localDescription }
+              });
+            }).catch(() => {});
+        }
+      }
     };
 
-    // If we are the initiator, create and send offer
+    // Initiator sends offer
     if (initiator) {
       pc.createOffer()
         .then(offer => pc.setLocalDescription(offer))
         .then(() => {
-          console.log(`[WebRTC] Sending offer to ${targetId}`);
+          console.log(`[WebRTC] Offer → ${targetId.slice(0,8)}`);
           channelRef.current?.send({
-            type: 'broadcast',
-            event: 'offer',
+            type: 'broadcast', event: 'offer',
             payload: { targetId, senderId: myId, sdp: pc.localDescription }
           });
         })
-        .catch(err => console.error('Offer error:', err));
+        .catch(err => console.error('[WebRTC] Offer error:', err));
     }
 
     return pc;
-  }, [myId]);
+  }, [myId, playRemoteAudio]);
 
-  // ─── 3. Join Supabase Realtime channel ───────────────────────────────
+  // ─── 3. Supabase Realtime channel ─────────────────────────────────────
   useEffect(() => {
-    // Wait until mic is ready
     if (!roomId || !micReady || !myId) return;
 
-    // Prevent Strict Mode double-mount from creating duplicate channels
-    if (mountedRef.current) return;
-    mountedRef.current = true;
-
-    console.log(`[Realtime] Joining room:${roomId} as ${myId}`);
+    console.log(`[Realtime] Joining room:${roomId} as ${myId.slice(0,8)}`);
 
     const channel = supabase.channel(`room:${roomId}`, {
-      config: {
-        presence: { key: myId },
-        broadcast: { self: false }
-      }
+      config: { presence: { key: myId }, broadcast: { self: false } }
     });
     channelRef.current = channel;
 
-    // ── Presence handlers ──
+    // ── Presence sync: rebuild peer list from truth ──
     const syncPresence = () => {
       const state = channel.presenceState();
-      console.log('[Realtime] Presence sync:', JSON.stringify(Object.keys(state)));
+      const ids = Object.keys(state).filter(id => id !== myId);
+      console.log('[Realtime] Sync peers:', ids.map(i => i.slice(0,8)));
 
       const activePeers = {};
       const talkers = new Set();
-
-      Object.entries(state).forEach(([id, presences]) => {
-        if (id !== myId && presences?.length > 0) {
-          activePeers[id] = { username: presences[0].username };
-          if (presences[0].isTalking) talkers.add(id);
+      ids.forEach(id => {
+        const p = state[id]?.[0];
+        if (p) {
+          activePeers[id] = { username: p.username };
+          if (p.isTalking) talkers.add(id);
         }
       });
 
       setPeers(prev => {
-        const merged = { ...activePeers };
-        // Preserve existing streams
-        Object.keys(merged).forEach(id => {
+        const merged = {};
+        Object.keys(activePeers).forEach(id => {
+          merged[id] = { ...activePeers[id] };
           if (prev[id]?.stream) merged[id].stream = prev[id].stream;
         });
         return merged;
@@ -168,90 +181,123 @@ export function useWebRTC(roomId, username) {
 
     channel
       .on('presence', { event: 'sync' }, syncPresence)
-      .on('presence', { event: 'join' }, ({ key, newPresences }) => {
-        console.log('[Realtime] User joined:', key);
+      .on('presence', { event: 'join' }, ({ key }) => {
+        console.log('[Realtime] Join:', key.slice(0,8));
         syncPresence();
         if (key !== myId) {
-          // Small delay to let the other side finish subscribing
-          setTimeout(() => createPeerConnection(key, true), 500);
+          // Use ID comparison to decide initiator → prevents both sides from
+          // simultaneously creating offers and destroying each other's connections
+          const iAmInitiator = myId > key;
+          if (iAmInitiator) {
+            setTimeout(() => makePeerConnection(key, true), 300);
+          }
         }
       })
       .on('presence', { event: 'leave' }, ({ key }) => {
-        console.log('[Realtime] User left:', key);
-        if (connectionsRef.current[key]) {
-          try { connectionsRef.current[key].close(); } catch (_) {}
-          delete connectionsRef.current[key];
+        console.log('[Realtime] Leave:', key.slice(0,8));
+        // Clean up peer connection
+        if (pcRef.current[key]) {
+          try { pcRef.current[key].close(); } catch (_) {}
+          delete pcRef.current[key];
+        }
+        // Clean up audio element
+        if (audioElsRef.current[key]) {
+          audioElsRef.current[key].srcObject = null;
+          delete audioElsRef.current[key];
         }
         syncPresence();
       })
-      // ── WebRTC signaling via broadcast ──
+      // ── WebRTC signaling ──
       .on('broadcast', { event: 'offer' }, async ({ payload }) => {
         if (payload.targetId !== myId) return;
-        console.log('[WebRTC] Received offer from', payload.senderId);
-        const pc = createPeerConnection(payload.senderId, false);
-        await pc.setRemoteDescription(new RTCSessionDescription(payload.sdp));
-        const answer = await pc.createAnswer();
-        await pc.setLocalDescription(answer);
-        channel.send({
-          type: 'broadcast',
-          event: 'answer',
-          payload: { targetId: payload.senderId, senderId: myId, sdp: pc.localDescription }
-        });
+        console.log('[WebRTC] Offer ← ' + payload.senderId.slice(0,8));
+        const pc = makePeerConnection(payload.senderId, false);
+        try {
+          await pc.setRemoteDescription(new RTCSessionDescription(payload.sdp));
+          const answer = await pc.createAnswer();
+          await pc.setLocalDescription(answer);
+          channel.send({
+            type: 'broadcast', event: 'answer',
+            payload: { targetId: payload.senderId, senderId: myId, sdp: pc.localDescription }
+          });
+        } catch (err) {
+          console.error('[WebRTC] Answer error:', err);
+        }
       })
       .on('broadcast', { event: 'answer' }, async ({ payload }) => {
         if (payload.targetId !== myId) return;
-        console.log('[WebRTC] Received answer from', payload.senderId);
-        const pc = connectionsRef.current[payload.senderId];
+        console.log('[WebRTC] Answer ← ' + payload.senderId.slice(0,8));
+        const pc = pcRef.current[payload.senderId];
         if (pc && pc.signalingState === 'have-local-offer') {
-          await pc.setRemoteDescription(new RTCSessionDescription(payload.sdp));
+          try {
+            await pc.setRemoteDescription(new RTCSessionDescription(payload.sdp));
+          } catch (err) {
+            console.error('[WebRTC] setRemoteDesc error:', err);
+          }
         }
       })
       .on('broadcast', { event: 'ice-candidate' }, async ({ payload }) => {
         if (payload.targetId !== myId) return;
-        const pc = connectionsRef.current[payload.senderId];
-        if (pc) {
+        const pc = pcRef.current[payload.senderId];
+        if (pc && pc.remoteDescription) {
           try {
             await pc.addIceCandidate(new RTCIceCandidate(payload.candidate));
           } catch (err) {
-            console.warn('ICE candidate error:', err);
+            console.warn('[WebRTC] ICE error:', err.message);
           }
         }
       });
 
+    // Subscribe + track presence
     channel.subscribe(async (status, err) => {
-      console.log('[Realtime] Channel status:', status, err || '');
+      console.log('[Realtime] Status:', status, err || '');
       setConnectionStatus(status);
       if (status === 'SUBSCRIBED') {
-        await channel.track({ username, isTalking: false });
-        console.log('[Realtime] Presence tracked successfully');
+        try {
+          await channel.track({ username, isTalking: false });
+          console.log('[Realtime] Tracked OK');
+        } catch (e) {
+          console.error('[Realtime] Track failed:', e);
+        }
+      } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED') {
+        // Auto-reconnect after 2s
+        console.log('[Realtime] Channel lost, reconnecting in 2s...');
+        setConnectionStatus('Reconnecting...');
+        setTimeout(() => {
+          if (channelRef.current === channel) {
+            channel.subscribe();
+          }
+        }, 2000);
       }
     });
 
+    // Cleanup
     return () => {
       console.log('[Realtime] Cleanup');
-      mountedRef.current = false;
-      channel.untrack();
-      channel.unsubscribe();
-      supabase.removeChannel(channel);
       channelRef.current = null;
-      Object.values(connectionsRef.current).forEach(pc => {
-        try { pc.close(); } catch (_) {}
-      });
-      connectionsRef.current = {};
+      channel.untrack().catch(() => {});
+      channel.unsubscribe();
+      // Small delay before removing so Strict Mode second mount isn't affected
+      const ch = channel;
+      setTimeout(() => supabase.removeChannel(ch), 500);
+      // Close all peer connections
+      Object.values(pcRef.current).forEach(pc => { try { pc.close(); } catch (_) {} });
+      pcRef.current = {};
+      // Clean up audio elements
+      Object.values(audioElsRef.current).forEach(el => { el.srcObject = null; });
+      audioElsRef.current = {};
     };
-  }, [roomId, micReady, myId, username, createPeerConnection]);
+  }, [roomId, micReady, myId, username, makePeerConnection]);
 
-  // ─── 4. Push-to-Talk toggle ──────────────────────────────────────────
+  // ─── 4. Push-to-Talk ──────────────────────────────────────────────────
   const toggleMute = useCallback(async (muted) => {
     setIsMuted(muted);
-    // Enable/disable local mic track
     streamRef.current?.getAudioTracks().forEach(t => (t.enabled = !muted));
-    // Update presence so others see the "talking" indicator
     if (channelRef.current) {
       try {
         await channelRef.current.track({ username, isTalking: !muted });
       } catch (err) {
-        console.error('Presence track error:', err);
+        console.error('[PTT] Track error:', err);
       }
     }
   }, [username]);
