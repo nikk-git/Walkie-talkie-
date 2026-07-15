@@ -15,6 +15,7 @@ export function useWebRTC(roomId, username) {
   const [myId, setMyId] = useState('');
   const [stream, setStream] = useState(null);
   const [isMuted, setIsMuted] = useState(true);
+  const [connectionStatus, setConnectionStatus] = useState('Initializing...');
   
   const connections = useRef({});
   const channelRef = useRef(null);
@@ -182,10 +183,17 @@ export function useWebRTC(roomId, username) {
         }
       });
 
-    channel.subscribe(async (status) => {
-      console.log('Supabase Channel Status:', status);
+    channel.subscribe(async (status, err) => {
+      console.log('Supabase Channel Status:', status, err);
+      setConnectionStatus(status);
       if (status === 'SUBSCRIBED') {
-        await channel.track({ username, isTalking: false });
+        try {
+          const res = await channel.track({ username, isTalking: false });
+          console.log('Track success:', res);
+        } catch (e) {
+          console.error('Track error:', e);
+          setConnectionStatus('TRACK_ERROR');
+        }
       }
     });
 
@@ -210,5 +218,5 @@ export function useWebRTC(roomId, username) {
     }
   };
 
-  return { peers, talkingUsers, isMuted, toggleMute, myId };
+  return { peers, talkingUsers, isMuted, toggleMute, myId, connectionStatus };
 }

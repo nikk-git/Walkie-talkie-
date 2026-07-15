@@ -6,7 +6,7 @@ import { useRouter } from 'next/navigation';
 
 export default function WalkieTalkie({ roomId, username }) {
   const router = useRouter();
-  const { peers, talkingUsers, isMuted, toggleMute, myId } = useWebRTC(roomId, username);
+  const { peers, talkingUsers, isMuted, toggleMute, myId, connectionStatus } = useWebRTC(roomId, username);
 
   // Auto-play audio streams
   const audioRefs = useRef({});
@@ -38,6 +38,9 @@ export default function WalkieTalkie({ roomId, username }) {
       <div style={{ textAlign: 'center' }}>
         <h2 style={{ marginBottom: '0.5rem' }}>Room {roomId}</h2>
         <p style={{ color: 'var(--text-muted)' }}>Connected as: {username}</p>
+        <p style={{ fontSize: '0.8rem', opacity: 0.7, color: connectionStatus === 'SUBSCRIBED' ? '#4ade80' : '#f87171', marginTop: '0.5rem' }}>
+          Realtime Status: {connectionStatus}
+        </p>
       </div>
 
       <div className="glass-panel" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '3rem', width: '100%', maxWidth: '500px' }}>
