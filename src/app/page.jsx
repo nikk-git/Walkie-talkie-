@@ -26,16 +26,20 @@ export default function Home() {
     setLoading(true);
     setError('');
     
-    if (!joinRoomId || !joinPassword || !joinUsername) {
+    const trimmedRoomId = joinRoomId.trim();
+    const trimmedPassword = joinPassword.trim();
+    const trimmedUsername = joinUsername.trim();
+    
+    if (!trimmedRoomId || !trimmedPassword || !trimmedUsername) {
       setError('Please fill in all fields');
       setLoading(false);
       return;
     }
     
-    const res = await joinRoom(joinRoomId, joinPassword);
+    const res = await joinRoom(trimmedRoomId, trimmedPassword);
     if (res.success) {
-      sessionStorage.setItem('wt_username', joinUsername);
-      router.push(`/room/${joinRoomId}`);
+      sessionStorage.setItem('wt_username', trimmedUsername);
+      router.push(`/room/${trimmedRoomId}`);
     } else {
       setError(res.error);
     }
@@ -47,15 +51,19 @@ export default function Home() {
     setLoading(true);
     setError('');
     
-    if (!createName || !createPassword || !createUsername) {
+    const trimmedName = createName.trim();
+    const trimmedPassword = createPassword.trim();
+    const trimmedUsername = createUsername.trim();
+    
+    if (!trimmedName || !trimmedPassword || !trimmedUsername) {
       setError('Please fill in all fields');
       setLoading(false);
       return;
     }
     
-    const res = await createRoom(createName, createPassword);
+    const res = await createRoom(trimmedName, trimmedPassword);
     if (res.success) {
-      sessionStorage.setItem('wt_username', createUsername);
+      sessionStorage.setItem('wt_username', trimmedUsername);
       router.push(`/room/${res.room.id}`);
     } else {
       setError(res.error);

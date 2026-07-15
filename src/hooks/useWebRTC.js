@@ -33,7 +33,10 @@ export function useWebRTC(roomId, username) {
         setStream(s);
         streamRef.current = s;
       })
-      .catch(err => console.error("Error accessing mic:", err));
+      .catch(err => {
+        console.error("Error accessing mic:", err);
+        alert("Microphone access is required to use the Walkie-Talkie! Please allow microphone permissions in your browser settings. If you are on a mobile device, ensure you are accessing the site via HTTPS.");
+      });
 
     return () => {
       mounted = false;
