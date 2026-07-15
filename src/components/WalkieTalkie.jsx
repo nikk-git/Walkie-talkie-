@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useCallback } from 'react';
 import { useWebRTC } from '@/hooks/useWebRTC';
 import { useRouter } from 'next/navigation';
 
@@ -8,29 +8,53 @@ export default function WalkieTalkie({ roomId, username }) {
   const router = useRouter();
   const { peers, talkingUsers, isMuted, toggleMute, myId, connectionStatus } = useWebRTC(roomId, username);
 
-  // Auto-play audio streams
+  // Manage audio elements for each peer
   const audioRefs = useRef({});
 
   useEffect(() => {
-    Object.keys(peers).forEach(peerId => {
-      if (peers[peerId].stream && audioRefs.current[peerId]) {
+    Object.entries(peers).forEach(([peerId, peer]) => {
+      if (peer.stream && audioRefs.current[peerId]) {
         const audioEl = audioRefs.current[peerId];
-        if (audioEl.srcObject !== peers[peerId].stream) {
-          audioEl.srcObject = peers[peerId].stream;
+        if (audioEl.srcObject !== peer.stream) {
+          audioEl.srcObject = peer.stream;
+          // Force play to handle autoplay policies
+          audioEl.play().catch(() => {
+            console.log('Audio autoplay blocked for', peerId);
+          });
         }
       }
     });
   }, [peers]);
 
+  // Ensure audio plays after any user interaction (autoplay policy workaround)
+  const handleUserInteraction = useCallback(() => {
+    Object.values(audioRefs.current).forEach(el => {
+      if (el && el.paused && el.srcObject) {
+        el.play().catch(() => {});
+      }
+    });
+  }, []);
+
+  const handleLeave = () => {
+    sessionStorage.removeItem('wt_username');
+    router.push('/');
+  };
+
+  const statusColor = connectionStatus === 'SUBSCRIBED' ? '#4ade80' : '#f87171';
+
   return (
-    <div style={{ padding: '2rem', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '2rem' }}>
+    <div
+      style={{ padding: '2rem', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '2rem' }}
+      onClick={handleUserInteraction}
+    >
       
-      {/* Audio elements for remote peers */}
+      {/* Hidden audio elements for remote peers */}
       {Object.keys(peers).map(peerId => (
         <audio
           key={peerId}
           ref={el => (audioRefs.current[peerId] = el)}
           autoPlay
+          playsInline
           style={{ display: 'none' }}
         />
       ))}
@@ -38,8 +62,8 @@ export default function WalkieTalkie({ roomId, username }) {
       <div style={{ textAlign: 'center' }}>
         <h2 style={{ marginBottom: '0.5rem' }}>Room {roomId}</h2>
         <p style={{ color: 'var(--text-muted)' }}>Connected as: {username}</p>
-        <p style={{ fontSize: '0.8rem', opacity: 0.7, color: connectionStatus === 'SUBSCRIBED' ? '#4ade80' : '#f87171', marginTop: '0.5rem' }}>
-          Realtime Status: {connectionStatus}
+        <p style={{ fontSize: '0.75rem', marginTop: '0.5rem', color: statusColor }}>
+          Realtime: {connectionStatus} &bull; ID: {myId?.slice(0, 8)}
         </p>
       </div>
 
@@ -66,16 +90,16 @@ export default function WalkieTalkie({ roomId, username }) {
             <div className={`user-badge ${!isMuted ? 'talking' : ''}`}>
               {username} (You)
             </div>
-            {Object.keys(peers).map(peerId => (
+            {Object.entries(peers).map(([peerId, peer]) => (
               <div key={peerId} className={`user-badge ${talkingUsers.has(peerId) ? 'talking' : ''}`}>
-                {peers[peerId].username}
+                {peer.username || 'Unknown'}
               </div>
             ))}
           </div>
         </div>
       </div>
 
-      <button className="btn btn-danger" onClick={() => router.push('/')}>
+      <button className="btn btn-danger" onClick={handleLeave}>
         Leave Room
       </button>
     </div>
