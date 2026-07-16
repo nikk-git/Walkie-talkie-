@@ -23,6 +23,7 @@ export function useWebRTC(roomId, username) {
   const streamRef = useRef(null);
   const audioElsRef = useRef({}); // peerId -> HTMLAudioElement
   const isTalkingRef = useRef(false);
+  const trackTimeoutRef = useRef(null);
 
   // Called on any user interaction to unlock audio
   const unlockAudio = useCallback(() => {
@@ -94,6 +95,7 @@ export function useWebRTC(roomId, username) {
         const audio = new Audio();
         audio.autoplay = true;
         audio.playsInline = true;
+        document.body.appendChild(audio);
         audioElsRef.current[targetId] = audio;
       }
       const audio = audioElsRef.current[targetId];
@@ -187,6 +189,7 @@ export function useWebRTC(roomId, username) {
           try { 
             audioElsRef.current[key].pause(); 
             audioElsRef.current[key].srcObject = null;
+            audioElsRef.current[key].remove();
           } catch (_) {}
           delete audioElsRef.current[key];
         }
@@ -244,14 +247,13 @@ export function useWebRTC(roomId, username) {
       Object.values(pcRef.current).forEach(pc => { try { pc.close(); } catch (_) {} });
       pcRef.current = {};
       Object.values(audioElsRef.current).forEach(a => { 
-        try { a.pause(); a.srcObject = null; } catch (_) {} 
+        try { a.pause(); a.srcObject = null; a.remove(); } catch (_) {} 
       });
       audioElsRef.current = {};
     };
   }, [roomId, micReady, myId, username, makePeerConnection]);
 
-  // ─── 4. Push-to-Talk ──────────────────────────────────────────────
-  const toggleMute = useCallback(async (muted) => {
+  const toggleMute = useCallback((muted) => {
     unlockAudio(); // Resume AudioContext on user gesture
     setIsMuted(muted);
     streamRef.current?.getAudioTracks().forEach(t => (t.enabled = !muted));
@@ -261,9 +263,12 @@ export function useWebRTC(roomId, username) {
     isTalkingRef.current = isTalking;
 
     if (channelRef.current) {
-      try {
-        await channelRef.current.track({ username, isTalking });
-      } catch (err) { console.error('[PTT] err:', err); }
+      clearTimeout(trackTimeoutRef.current);
+      trackTimeoutRef.current = setTimeout(() => {
+        if (channelRef.current) {
+          channelRef.current.track({ username, isTalking }).catch(err => console.error('[PTT] err:', err));
+        }
+      }, 350); // 350ms debounce
     }
   }, [username, unlockAudio]);
 
