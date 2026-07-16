@@ -21,31 +21,17 @@ export function useWebRTC(roomId, username) {
   const pcRef = useRef({});
   const channelRef = useRef(null);
   const streamRef = useRef(null);
-  // AudioContext for reliable playback on all devices including mobile
-  const audioCtxRef = useRef(null);
-  const audioNodesRef = useRef({}); // peerId -> { source, gainNode }
-
-  const myId = myIdRef.current;
-
-  // ─── Get or create AudioContext ────────────────────────────────────
-  const getAudioContext = useCallback(() => {
-    if (!audioCtxRef.current) {
-      audioCtxRef.current = new (window.AudioContext || window.webkitAudioContext)();
-    }
-    // Resume if suspended (mobile browsers require user gesture)
-    if (audioCtxRef.current.state === 'suspended') {
-      audioCtxRef.current.resume().catch(() => {});
-    }
-    return audioCtxRef.current;
-  }, []);
+  const audioElsRef = useRef({}); // peerId -> HTMLAudioElement
+  const isTalkingRef = useRef(false);
 
   // Called on any user interaction to unlock audio
   const unlockAudio = useCallback(() => {
-    const ctx = getAudioContext();
-    if (ctx.state === 'suspended') {
-      ctx.resume().catch(() => {});
-    }
-  }, [getAudioContext]);
+    Object.values(audioElsRef.current).forEach(audio => {
+      if (audio.paused && audio.srcObject) {
+        audio.play().catch(() => {});
+      }
+    });
+  }, []);
 
   // ─── 1. Acquire microphone ────────────────────────────────────────
   useEffect(() => {
@@ -69,30 +55,7 @@ export function useWebRTC(roomId, username) {
     };
   }, []);
 
-  // ─── Play remote stream via AudioContext ───────────────────────────
-  const playRemoteStream = useCallback((peerId, remoteStream) => {
-    const ctx = getAudioContext();
-
-    // Don't recreate if already connected to this stream
-    if (audioNodesRef.current[peerId]?.stream === remoteStream) return;
-
-    // Clean up old nodes
-    if (audioNodesRef.current[peerId]) {
-      try { audioNodesRef.current[peerId].source.disconnect(); } catch (_) {}
-    }
-
-    try {
-      const source = ctx.createMediaStreamSource(remoteStream);
-      const gain = ctx.createGain();
-      gain.gain.value = 1.0;
-      source.connect(gain);
-      gain.connect(ctx.destination);
-      audioNodesRef.current[peerId] = { source, gain, stream: remoteStream };
-      console.log(`[Audio] Playing stream from ${peerId.slice(0, 8)} via AudioContext`);
-    } catch (err) {
-      console.error('[Audio] Failed to play:', err);
-    }
-  }, [getAudioContext]);
+  const myId = myIdRef.current;
 
   // ─── 2. Create peer connection ────────────────────────────────────
   const makePeerConnection = useCallback((targetId, initiator) => {
@@ -126,8 +89,18 @@ export function useWebRTC(roomId, username) {
     pc.ontrack = (event) => {
       console.log(`[WebRTC] Track from ${targetId.slice(0, 8)}`);
       const rs = event.streams[0];
-      // Do not store the stream in React state to avoid Next.js HMR payload crashes
-      playRemoteStream(targetId, rs);
+      
+      if (!audioElsRef.current[targetId]) {
+        const audio = new Audio();
+        audio.autoplay = true;
+        audio.playsInline = true;
+        audioElsRef.current[targetId] = audio;
+      }
+      const audio = audioElsRef.current[targetId];
+      if (audio.srcObject !== rs) {
+        audio.srcObject = rs;
+        audio.play().catch(err => console.warn('[Audio] Autoplay blocked:', err));
+      }
     };
 
     pc.oniceconnectionstatechange = () => {
@@ -158,7 +131,7 @@ export function useWebRTC(roomId, username) {
     }
 
     return pc;
-  }, [myId, playRemoteStream]);
+  }, [myId]);
 
   // ─── 3. Supabase Realtime channel ─────────────────────────────────
   useEffect(() => {
@@ -210,9 +183,12 @@ export function useWebRTC(roomId, username) {
           try { pcRef.current[key].close(); } catch (_) {}
           delete pcRef.current[key];
         }
-        if (audioNodesRef.current[key]) {
-          try { audioNodesRef.current[key].source.disconnect(); } catch (_) {}
-          delete audioNodesRef.current[key];
+        if (audioElsRef.current[key]) {
+          try { 
+            audioElsRef.current[key].pause(); 
+            audioElsRef.current[key].srcObject = null;
+          } catch (_) {}
+          delete audioElsRef.current[key];
         }
         syncPresence();
       })
@@ -267,8 +243,10 @@ export function useWebRTC(roomId, username) {
       supabase.removeChannel(channel);
       Object.values(pcRef.current).forEach(pc => { try { pc.close(); } catch (_) {} });
       pcRef.current = {};
-      Object.values(audioNodesRef.current).forEach(n => { try { n.source.disconnect(); } catch (_) {} });
-      audioNodesRef.current = {};
+      Object.values(audioElsRef.current).forEach(a => { 
+        try { a.pause(); a.srcObject = null; } catch (_) {} 
+      });
+      audioElsRef.current = {};
     };
   }, [roomId, micReady, myId, username, makePeerConnection]);
 
@@ -277,9 +255,14 @@ export function useWebRTC(roomId, username) {
     unlockAudio(); // Resume AudioContext on user gesture
     setIsMuted(muted);
     streamRef.current?.getAudioTracks().forEach(t => (t.enabled = !muted));
+    
+    const isTalking = !muted;
+    if (isTalkingRef.current === isTalking) return;
+    isTalkingRef.current = isTalking;
+
     if (channelRef.current) {
       try {
-        await channelRef.current.track({ username, isTalking: !muted });
+        await channelRef.current.track({ username, isTalking });
       } catch (err) { console.error('[PTT] err:', err); }
     }
   }, [username, unlockAudio]);
