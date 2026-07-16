@@ -141,7 +141,7 @@ export function useWebRTC(roomId, username) {
 
     console.log(`[RT] Join room:${roomId} as ${myId.slice(0, 8)}`);
 
-    const channelName = `room:${roomId}:${Date.now()}`; // Unique name prevents stale channel reuse
+    const channelName = `room:${roomId}`;
     const channel = supabase.channel(channelName, {
       config: { presence: { key: myId }, broadcast: { self: false } }
     });
